@@ -1,15 +1,18 @@
 {
   "name": "paper-diagram-gen",
-  "version": "1.0.0",
-  "description": "Generate academic paper diagrams from text descriptions — flowcharts, architectures, pipelines in SVG",
+  "version": "2.1.0",
+  "description": "Generate academic paper diagrams from text or let AI describe them for you. BYOK with Gemini, OpenAI, or Anthropic.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "paper-diagram-gen": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --test src/__tests__/index.test.mjs"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo": "node dist/index.js demo"
   },
   "keywords": [
     "academic",
@@ -18,12 +21,25 @@
     "flowchart",
     "architecture",
     "svg",
-    "visualization"
+    "visualization",
+    "byok",
+    "llm",
+    "gemini",
+    "openai",
+    "anthropic",
+    "ai-diagram"
   ],
   "author": "HomenShum",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.2.1",
-    "typescript": "^5.4.0"
-  }
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ]
 }

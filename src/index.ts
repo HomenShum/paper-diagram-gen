@@ -3,316 +3,288 @@
 /**
  * paper-diagram-gen — Generate academic paper diagrams from text descriptions.
  *
- * Produces SVG flowcharts, architecture diagrams, and pipeline visualizations.
+ * Deterministic SVG engine (no API key) + LLM-powered commands (BYOK).
+ * Uses raw fetch() for LLM calls — zero SDK dependencies.
  */
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+import * as fs from "fs";
+import * as path from "path";
 
-export interface DiagramNode {
-  id: string;
-  label: string;
-  type: "process" | "decision" | "start" | "end" | "component";
-  subComponents?: string[];
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+// ─── Re-exports (programmatic API) ─────────────────────────────────────────
+
+export { generateDiagram, parseDiagramDescription } from "./svg";
+export type { DiagramNode, DiagramEdge, DiagramOptions, DiagramResult } from "./svg";
+
+export { DIAGRAM_PROMPT, parseLlmResponse } from "./prompts";
+export type { DiagramSuggestion } from "./prompts";
+
+export { callLlm, getProvider, detectProvider } from "./provider";
+export type { LlmProvider, ProviderName } from "./provider";
+
+// ─── Imports for CLI ───────────────────────────────────────────────────────
+
+import { generateDiagram } from "./svg";
+import { DIAGRAM_PROMPT, parseLlmResponse } from "./prompts";
+import { callLlm, detectProvider } from "./provider";
+
+const VERSION = "2.1.0";
+
+// ─── Demo Examples ─────────────────────────────────────────────────────────
+
+const DEMO_EXAMPLES = [
+  {
+    name: "ML Training Pipeline",
+    type: "pipeline" as const,
+    description:
+      "Raw Data -> Preprocessing[Tokenize,Normalize,Augment] -> Feature Extraction -> Model Training -> Evaluation -> Deployment",
+  },
+  {
+    name: "Transformer Architecture",
+    type: "architecture" as const,
+    description:
+      "Input Embedding -> Encoder[Self-Attention,Feed-Forward,LayerNorm] -> Latent Representation -> Decoder[Cross-Attention,Feed-Forward,LayerNorm] -> Output Projection -> Softmax",
+  },
+  {
+    name: "Experiment Workflow",
+    type: "flowchart" as const,
+    description:
+      "Hypothesis -> Design Experiment -> Run Trials -> Significant? -> Yes: Publish, No: Revise Hypothesis -> Design Experiment",
+  },
+];
+
+export { DEMO_EXAMPLES };
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function getArg(args: string[], flag: string): string | null {
+  const idx = args.indexOf(flag);
+  return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
 }
-
-export interface DiagramEdge {
-  from: string;
-  to: string;
-  label?: string;
-}
-
-export interface DiagramOptions {
-  type?: "pipeline" | "architecture" | "flowchart";
-  width?: number;
-  nodeSpacing?: number;
-  layerSpacing?: number;
-  fontSize?: number;
-  fontFamily?: string;
-}
-
-export interface DiagramResult {
-  svg: string;
-  nodes: DiagramNode[];
-  edges: DiagramEdge[];
-}
-
-// ─── Parsing ────────────────────────────────────────────────────────────────
-
-function parseDescription(desc: string): { nodes: DiagramNode[]; edges: DiagramEdge[] } {
-  const nodes: DiagramNode[] = [];
-  const edges: DiagramEdge[] = [];
-
-  // Split by -> to get stages
-  const parts = desc.split("->").map((p) => p.trim()).filter((p) => p.length > 0);
-
-  for (let i = 0; i < parts.length; i++) {
-    let part = parts[i];
-
-    // Handle decision branches: "Converged? -> Yes: Deploy, No: Tune -> ..."
-    const branchMatch = part.match(/^(.+?)\s*->\s*(.+)$/);
-    if (branchMatch) {
-      // Shouldn't happen after split, but handle gracefully
-      part = branchMatch[1];
-    }
-
-    // Handle comma-separated branch outcomes: "Yes: Deploy, No: Tune"
-    if (part.includes(":") && part.includes(",")) {
-      const branches = part.split(",").map((b) => b.trim());
-      for (const branch of branches) {
-        const [label, target] = branch.split(":").map((s) => s.trim());
-        const nodeId = `node_${nodes.length}`;
-        nodes.push({
-          id: nodeId,
-          label: target,
-          type: "process",
-          x: 0, y: 0, width: 0, height: 0,
-        });
-        if (i > 0) {
-          const prevId = nodes[nodes.length - 2]?.id;
-          if (prevId) edges.push({ from: prevId, to: nodeId, label });
-        }
-      }
-      continue;
-    }
-
-    // Handle sub-components: "Encoder[CNN,RNN,Transformer]"
-    const compMatch = part.match(/^(.+?)\[(.+)\]$/);
-    const label = compMatch ? compMatch[1].trim() : part;
-    const subs = compMatch ? compMatch[2].split(",").map((s) => s.trim()) : undefined;
-
-    const isDecision = part.endsWith("?");
-    const nodeId = `node_${i}`;
-
-    nodes.push({
-      id: nodeId,
-      label: isDecision ? label : label,
-      type: isDecision ? "decision" : i === 0 ? "start" : i === parts.length - 1 ? "end" : "process",
-      subComponents: subs,
-      x: 0, y: 0, width: 0, height: 0,
-    });
-
-    if (i > 0) {
-      const prevNode = nodes.find((n) => n.id === `node_${i - 1}`);
-      if (prevNode) edges.push({ from: prevNode.id, to: nodeId });
-    }
-  }
-
-  return { nodes, edges };
-}
-
-// ─── Layout ─────────────────────────────────────────────────────────────────
-
-function layoutNodes(
-  nodes: DiagramNode[],
-  type: string,
-  opts: Required<Pick<DiagramOptions, "width" | "nodeSpacing" | "layerSpacing" | "fontSize">>
-): void {
-  const charWidth = opts.fontSize * 0.6;
-  const padding = 30;
-
-  for (const node of nodes) {
-    const textWidth = node.label.length * charWidth;
-    const subWidth = node.subComponents
-      ? node.subComponents.join(", ").length * charWidth * 0.8
-      : 0;
-    node.width = Math.max(100, textWidth + padding, subWidth + padding);
-    node.height = node.subComponents ? 60 : 40;
-    if (node.type === "decision") {
-      node.width = Math.max(node.width, 120);
-      node.height = 50;
-    }
-  }
-
-  if (type === "architecture") {
-    // Layered vertical layout
-    let y = 40;
-    for (const node of nodes) {
-      node.x = (opts.width - node.width) / 2;
-      node.y = y;
-      y += node.height + opts.layerSpacing;
-    }
-  } else {
-    // Horizontal pipeline / flowchart
-    let x = 40;
-    const maxHeight = Math.max(...nodes.map((n) => n.height));
-    const centerY = 60;
-    for (const node of nodes) {
-      node.x = x;
-      node.y = centerY + (maxHeight - node.height) / 2;
-      x += node.width + opts.nodeSpacing;
-    }
-  }
-}
-
-// ─── SVG Generation ─────────────────────────────────────────────────────────
-
-function renderNode(node: DiagramNode, fontSize: number, fontFamily: string): string {
-  const lines: string[] = [];
-  const cx = node.x + node.width / 2;
-  const cy = node.y + node.height / 2;
-
-  if (node.type === "decision") {
-    // Diamond shape
-    const hw = node.width / 2;
-    const hh = node.height / 2;
-    lines.push(`<polygon points="${cx},${node.y} ${node.x + node.width},${cy} ${cx},${node.y + node.height} ${node.x},${cy}" fill="#FFF3E0" stroke="#E65100" stroke-width="2"/>`);
-  } else if (node.type === "start") {
-    lines.push(`<rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2"/>`);
-  } else if (node.type === "end") {
-    lines.push(`<rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="8" fill="#FFEBEE" stroke="#C62828" stroke-width="2"/>`);
-  } else {
-    lines.push(`<rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="6" fill="#E3F2FD" stroke="#1565C0" stroke-width="2"/>`);
-  }
-
-  // Main label
-  const labelY = node.subComponents ? cy - 6 : cy + 4;
-  lines.push(`<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="${fontFamily}" font-size="${fontSize}" fill="#212121">${escapeXml(node.label)}</text>`);
-
-  // Sub-components
-  if (node.subComponents) {
-    const subText = node.subComponents.join(", ");
-    lines.push(`<text x="${cx}" y="${cy + 14}" text-anchor="middle" font-family="${fontFamily}" font-size="${fontSize - 2}" fill="#616161">[${escapeXml(subText)}]</text>`);
-  }
-
-  return lines.join("\n  ");
-}
-
-function renderEdge(edge: DiagramEdge, nodes: DiagramNode[], vertical: boolean): string {
-  const from = nodes.find((n) => n.id === edge.from);
-  const to = nodes.find((n) => n.id === edge.to);
-  if (!from || !to) return "";
-
-  let x1: number, y1: number, x2: number, y2: number;
-
-  if (vertical) {
-    x1 = from.x + from.width / 2;
-    y1 = from.y + from.height;
-    x2 = to.x + to.width / 2;
-    y2 = to.y;
-  } else {
-    x1 = from.x + from.width;
-    y1 = from.y + from.height / 2;
-    x2 = to.x;
-    y2 = to.y + to.height / 2;
-  }
-
-  let svg = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#424242" stroke-width="2" marker-end="url(#arrowhead)"/>`;
-
-  if (edge.label) {
-    const mx = (x1 + x2) / 2;
-    const my = (y1 + y2) / 2 - 8;
-    svg += `\n  <text x="${mx}" y="${my}" text-anchor="middle" font-size="11" fill="#757575">${escapeXml(edge.label)}</text>`;
-  }
-
-  return svg;
-}
-
-function escapeXml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// ─── Main API ───────────────────────────────────────────────────────────────
-
-export function generateDiagram(description: string, options: DiagramOptions = {}): DiagramResult {
-  const type = options.type || "pipeline";
-  const fontSize = options.fontSize || 14;
-  const fontFamily = options.fontFamily || "Arial, Helvetica, sans-serif";
-  const nodeSpacing = options.nodeSpacing || 60;
-  const layerSpacing = options.layerSpacing || 50;
-  const targetWidth = options.width || 800;
-
-  const { nodes, edges } = parseDescription(description);
-  layoutNodes(nodes, type, { width: targetWidth, nodeSpacing, layerSpacing, fontSize });
-
-  const vertical = type === "architecture";
-
-  // Compute SVG dimensions
-  const maxX = Math.max(...nodes.map((n) => n.x + n.width), 200) + 40;
-  const maxY = Math.max(...nodes.map((n) => n.y + n.height), 100) + 40;
-  const svgWidth = Math.max(maxX, 200);
-  const svgHeight = Math.max(maxY, 100);
-
-  const svgParts: string[] = [];
-  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`);
-  svgParts.push(`  <defs>`);
-  svgParts.push(`    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">`);
-  svgParts.push(`      <polygon points="0 0, 10 3.5, 0 7" fill="#424242"/>`);
-  svgParts.push(`    </marker>`);
-  svgParts.push(`  </defs>`);
-  svgParts.push(`  <rect width="100%" height="100%" fill="white"/>`);
-
-  for (const edge of edges) {
-    svgParts.push(`  ${renderEdge(edge, nodes, vertical)}`);
-  }
-  for (const node of nodes) {
-    svgParts.push(`  ${renderNode(node, fontSize, fontFamily)}`);
-  }
-
-  svgParts.push(`</svg>`);
-
-  return { svg: svgParts.join("\n"), nodes, edges };
-}
-
-// ─── CLI ────────────────────────────────────────────────────────────────────
 
 function printHelp(): void {
-  console.log(`paper-diagram-gen v1.0.0
+  console.log(`paper-diagram-gen v${VERSION}
+
+Generate academic paper diagrams from text -- manually or with AI.
 
 Usage:
-  paper-diagram-gen "<description>" [options]
-  paper-diagram-gen --help
+  paper-diagram-gen generate "<description>" [options]   Generate SVG from arrow notation
+  paper-diagram-gen describe <file>                      Suggest diagrams for a paper (requires API key)
+  paper-diagram-gen auto <file> [--output-dir <dir>]     Generate SVGs from paper text (requires API key)
+  paper-diagram-gen demo                                 Generate 3 example SVGs (no API key needed)
+  paper-diagram-gen --help                               Show this help
 
 Options:
-  --type <type>      Diagram type: pipeline, architecture, flowchart (default: pipeline)
-  --output <file>    Save SVG to file (default: stdout)
-  --width <px>       Target width in pixels (default: 800)
-  --help             Show this help
+  --type <type>         Diagram type: pipeline, architecture, flowchart (default: pipeline)
+  --output <path>       Save SVG to file (for generate command)
+  --output-dir <dir>    Output directory (for auto command, default: ./diagrams)
+  --help                Show this help
 
 Examples:
-  paper-diagram-gen "Input -> Process -> Output" --type pipeline
-  paper-diagram-gen "Encoder[CNN,RNN] -> Latent -> Decoder" --type architecture
-  paper-diagram-gen "Start -> Check? -> Yes: Done, No: Retry" --type flowchart`);
+  paper-diagram-gen generate "Input -> Process -> Output" --type pipeline
+  paper-diagram-gen generate "Encoder[CNN,RNN] -> Latent -> Decoder" --type architecture --output arch.svg
+  paper-diagram-gen describe paper.txt
+  paper-diagram-gen auto paper.md --output-dir ./diagrams
+  paper-diagram-gen demo
+
+Environment (BYOK — set one for describe/auto):
+  GEMINI_API_KEY        Google Gemini (tried first)
+  OPENAI_API_KEY        OpenAI GPT-4o-mini (tried second)
+  ANTHROPIC_API_KEY     Anthropic Claude Haiku (tried third)`);
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+// ─── Command: generate ─────────────────────────────────────────────────────
 
-  if (args.includes("--help") || args.length === 0) {
-    printHelp();
-    return;
-  }
+function cmdGenerate(description: string, args: string[]): void {
+  const type = (getArg(args, "--type") || "pipeline") as "pipeline" | "architecture" | "flowchart";
+  const outputFile = getArg(args, "--output");
 
-  const description = args[0];
-  if (!description || description.startsWith("--")) {
-    console.error("Missing description. Usage: paper-diagram-gen \"<description>\"");
-    process.exit(1);
-  }
-
-  const typeIdx = args.indexOf("--type");
-  const type = (typeIdx !== -1 && args[typeIdx + 1]) ? args[typeIdx + 1] as DiagramOptions["type"] : "pipeline";
-
-  const widthIdx = args.indexOf("--width");
-  const width = widthIdx !== -1 && args[widthIdx + 1] ? parseInt(args[widthIdx + 1]) : 800;
-
-  const outputIdx = args.indexOf("--output");
-  const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : null;
-
-  const result = generateDiagram(description, { type, width });
+  const result = generateDiagram(description, { type });
 
   if (outputFile) {
-    const fs = await import("fs");
     fs.writeFileSync(outputFile, result.svg);
-    console.log(`Diagram saved to ${outputFile} (${result.nodes.length} nodes, ${result.edges.length} edges)`);
+    console.log(
+      `Diagram saved to ${outputFile} (${result.nodes.length} nodes, ${result.edges.length} edges)`
+    );
   } else {
     console.log(result.svg);
   }
 }
 
+// ─── Command: describe ─────────────────────────────────────────────────────
+
+async function cmdDescribe(args: string[]): Promise<void> {
+  const filePath = args[1];
+  if (!filePath) {
+    console.error("Missing file path. Usage: paper-diagram-gen describe <file>");
+    process.exit(1);
+  }
+
+  const providerName = detectProvider();
+  if (!providerName) {
+    console.error(
+      "No LLM provider configured.\n" +
+        "Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY\n\n" +
+        "Example: GEMINI_API_KEY=... paper-diagram-gen describe paper.txt"
+    );
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(filePath)) {
+    console.error(`File not found: ${filePath}`);
+    process.exit(1);
+  }
+
+  const paperText = fs.readFileSync(filePath, "utf-8");
+  console.log(`Reading ${filePath}... (using ${providerName})`);
+
+  const raw = await callLlm(DIAGRAM_PROMPT, `Paper text:\n\n${paperText}`);
+  const suggestions = parseLlmResponse(raw);
+
+  console.log(`\nSuggested diagrams (${suggestions.length}):\n`);
+  for (let i = 0; i < suggestions.length; i++) {
+    const s = suggestions[i];
+    console.log(`  ${i + 1}. [${s.type}] ${s.purpose}`);
+    console.log(`     ${s.description}`);
+    console.log("");
+  }
+
+  console.log("To generate SVGs automatically, run:");
+  console.log(`  paper-diagram-gen auto ${filePath} --output-dir ./diagrams`);
+}
+
+// ─── Command: auto ─────────────────────────────────────────────────────────
+
+async function cmdAuto(args: string[]): Promise<void> {
+  const filePath = args[1];
+  if (!filePath) {
+    console.error("Missing file path. Usage: paper-diagram-gen auto <file> [--output-dir <dir>]");
+    process.exit(1);
+  }
+
+  const providerName = detectProvider();
+  if (!providerName) {
+    console.error(
+      "No LLM provider configured.\n" +
+        "Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY"
+    );
+    process.exit(1);
+  }
+
+  const outputDir = getArg(args, "--output-dir") || "./diagrams";
+
+  if (!fs.existsSync(filePath)) {
+    console.error(`File not found: ${filePath}`);
+    process.exit(1);
+  }
+
+  const paperText = fs.readFileSync(filePath, "utf-8");
+
+  console.log(`Reading ${filePath}... (using ${providerName})`);
+  console.log(`Output directory: ${outputDir}/\n`);
+
+  // Step 1: LLM describe
+  const raw = await callLlm(DIAGRAM_PROMPT, `Paper text:\n\n${paperText}`);
+  const suggestions = parseLlmResponse(raw);
+
+  // Step 2: Generate SVGs
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  console.log(`Generated ${suggestions.length} diagrams:\n`);
+
+  for (let i = 0; i < suggestions.length; i++) {
+    const s = suggestions[i];
+    const result = generateDiagram(s.description, { type: s.type });
+
+    const slug = s.purpose
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40);
+    const filename = `${String(i + 1).padStart(2, "0")}-${s.type}-${slug}.svg`;
+    const filepath = path.join(outputDir, filename);
+
+    fs.writeFileSync(filepath, result.svg);
+
+    console.log(`  ${filename}`);
+    console.log(`    Type: ${s.type} | Nodes: ${result.nodes.length} | Edges: ${result.edges.length}`);
+    console.log(`    ${s.purpose}`);
+    console.log("");
+  }
+}
+
+// ─── Command: demo ─────────────────────────────────────────────────────────
+
+function cmdDemo(): void {
+  const outputDir = "./demo-diagrams";
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  console.log(`Generating demo diagrams to ${outputDir}/\n`);
+
+  for (const example of DEMO_EXAMPLES) {
+    const result = generateDiagram(example.description, { type: example.type });
+    const filename = `demo-${example.type}.svg`;
+    const filepath = path.join(outputDir, filename);
+
+    fs.writeFileSync(filepath, result.svg);
+
+    console.log(`  ${filename}`);
+    console.log(`    ${example.name} (${example.type}) -- ${result.nodes.length} nodes, ${result.edges.length} edges`);
+  }
+
+  console.log(`\nDone! Open the SVG files in any browser to view.`);
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+
+  if (args.includes("--help") || args.includes("-h") || args.length === 0) {
+    printHelp();
+    return;
+  }
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(VERSION);
+    return;
+  }
+
+  const command = args[0];
+
+  switch (command) {
+    case "generate":
+      if (!args[1]) {
+        console.error('Missing description. Usage: paper-diagram-gen generate "<description>"');
+        process.exit(1);
+      }
+      cmdGenerate(args[1], args.slice(1));
+      break;
+    case "describe":
+      await cmdDescribe(args);
+      break;
+    case "auto":
+      await cmdAuto(args);
+      break;
+    case "demo":
+      cmdDemo();
+      break;
+    default:
+      // Backward compat: treat first arg as description for direct SVG generation
+      if (command.startsWith("--")) {
+        console.error(`Unknown option: ${command}. Use --help for usage.`);
+        process.exit(1);
+      }
+      cmdGenerate(command, args);
+      break;
+  }
+}
+
 main().catch((err) => {
-  console.error(err);
+  console.error(err.message || err);
   process.exit(1);
 });

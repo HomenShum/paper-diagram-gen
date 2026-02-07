@@ -2,7 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 const mod = await import("../../dist/index.js");
-const { generateDiagram } = mod;
+const { generateDiagram, parseDiagramDescription, DIAGRAM_PROMPT, parseLlmResponse, DEMO_EXAMPLES, detectProvider, callLlm } = mod;
+
+// ─── Deterministic SVG generation ──────────────────────────────────────────
 
 describe("generateDiagram", () => {
   it("should return valid structure", () => {
@@ -35,7 +37,6 @@ describe("generateDiagram", () => {
 
   it("should layout architecture vertically", () => {
     const result = generateDiagram("Layer1 -> Layer2 -> Layer3", { type: "architecture" });
-    // In architecture mode, y increases downward
     assert.ok(result.nodes[0].y < result.nodes[1].y, "Layer1 should be above Layer2");
     assert.ok(result.nodes[1].y < result.nodes[2].y, "Layer2 should be above Layer3");
   });
@@ -71,5 +72,137 @@ describe("generateDiagram", () => {
     const decision = result.nodes.find((n) => n.type === "decision");
     assert.ok(decision, "Should have a decision node");
     assert.ok(decision.label.includes("Converged"), "Decision should contain question");
+  });
+});
+
+// ─── Prompt template ───────────────────────────────────────────────────────
+
+describe("DIAGRAM_PROMPT", () => {
+  it("should exist and be non-empty", () => {
+    assert.ok(typeof DIAGRAM_PROMPT === "string");
+    assert.ok(DIAGRAM_PROMPT.length > 100, "Prompt should be substantial");
+  });
+
+  it("should mention JSON output format", () => {
+    assert.ok(DIAGRAM_PROMPT.includes("JSON"), "Prompt should mention JSON");
+  });
+
+  it("should mention arrow notation", () => {
+    assert.ok(DIAGRAM_PROMPT.includes("->"), "Prompt should mention arrow notation");
+  });
+});
+
+// ─── parseLlmResponse ──────────────────────────────────────────────────────
+
+describe("parseLlmResponse", () => {
+  it("should parse valid JSON array", () => {
+    const raw = JSON.stringify([
+      { type: "pipeline", description: "A -> B -> C", purpose: "Test pipeline" },
+      { type: "architecture", description: "X -> Y", purpose: "Test arch" },
+    ]);
+    const result = parseLlmResponse(raw);
+    assert.equal(result.length, 2);
+    assert.equal(result[0].type, "pipeline");
+    assert.equal(result[0].description, "A -> B -> C");
+    assert.equal(result[0].purpose, "Test pipeline");
+  });
+
+  it("should strip markdown code fences", () => {
+    const raw = '```json\n[{"type":"pipeline","description":"A -> B","purpose":"test"}]\n```';
+    const result = parseLlmResponse(raw);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type, "pipeline");
+  });
+
+  it("should handle trailing commas", () => {
+    const raw = '[{"type":"pipeline","description":"A -> B","purpose":"test"},]';
+    const result = parseLlmResponse(raw);
+    assert.equal(result.length, 1);
+  });
+
+  it("should throw on empty response", () => {
+    assert.throws(() => parseLlmResponse(""), /No JSON array found/);
+  });
+
+  it("should throw on invalid JSON", () => {
+    assert.throws(() => parseLlmResponse("not json at all"), /No JSON array found/);
+  });
+
+  it("should reject invalid suggestion types", () => {
+    const raw = JSON.stringify([
+      { type: "invalid_type", description: "A -> B", purpose: "test" },
+    ]);
+    assert.throws(() => parseLlmResponse(raw), /No valid diagram suggestions/);
+  });
+});
+
+// ─── Demo descriptions ────────────────────────────────────────────────────
+
+describe("DEMO_EXAMPLES", () => {
+  it("should have exactly 3 examples", () => {
+    assert.equal(DEMO_EXAMPLES.length, 3);
+  });
+
+  it("should cover all three diagram types", () => {
+    const types = DEMO_EXAMPLES.map((e) => e.type);
+    assert.ok(types.includes("pipeline"), "Should have pipeline demo");
+    assert.ok(types.includes("architecture"), "Should have architecture demo");
+    assert.ok(types.includes("flowchart"), "Should have flowchart demo");
+  });
+
+  it("should produce valid SVGs from each demo description", () => {
+    for (const example of DEMO_EXAMPLES) {
+      const result = generateDiagram(example.description, { type: example.type });
+      assert.ok(result.svg.includes("<svg"), `${example.name} should produce valid SVG`);
+      assert.ok(result.svg.includes("</svg>"), `${example.name} should have closing SVG tag`);
+      assert.ok(result.nodes.length >= 3, `${example.name} should have at least 3 nodes`);
+      assert.ok(result.edges.length >= 2, `${example.name} should have at least 2 edges`);
+    }
+  });
+
+  it("should have arrow notation in all descriptions", () => {
+    for (const example of DEMO_EXAMPLES) {
+      assert.ok(example.description.includes("->"), `${example.name} should use arrow notation`);
+    }
+  });
+});
+
+// ─── Provider detection (no API key set) ───────────────────────────────────
+
+describe("detectProvider", () => {
+  it("should return null when no API keys are set", () => {
+    // Save and clear env vars
+    const saved = {
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      GOOGLE_AI_API_KEY: process.env.GOOGLE_AI_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    };
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_AI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    try {
+      const result = detectProvider();
+      assert.equal(result, null);
+    } finally {
+      // Restore env vars
+      for (const [key, val] of Object.entries(saved)) {
+        if (val !== undefined) process.env[key] = val;
+      }
+    }
+  });
+
+  it("should be a function", () => {
+    assert.equal(typeof detectProvider, "function");
+  });
+});
+
+// ─── callLlm (no API key) ─────────────────────────────────────────────────
+
+describe("callLlm", () => {
+  it("should be exported as a function", () => {
+    assert.equal(typeof callLlm, "function");
   });
 });
