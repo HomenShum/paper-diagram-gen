@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 
 /**
- * paper-diagram-gen — Generate academic paper diagrams from text descriptions.
+ * paper-diagram-gen — Deep agent for academic paper diagram generation.
  *
- * Deterministic SVG engine (no API key) + LLM-powered commands (BYOK).
- * Uses raw fetch() for LLM calls — zero SDK dependencies.
+ * Deterministic SVG engine (no API key) + ReAct agent for multi-step
+ * paper analysis, diagram suggestion, generation, and validation.
+ * Inspired by LangChain ReAct, Anthropic agents, Manus AI.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 
-// ─── Re-exports (programmatic API) ─────────────────────────────────────────
+// ── Re-exports (programmatic API) ─────────────────────────────────────────
 
 export { generateDiagram, parseDiagramDescription } from "./svg";
 export type { DiagramNode, DiagramEdge, DiagramOptions, DiagramResult } from "./svg";
@@ -18,18 +19,22 @@ export type { DiagramNode, DiagramEdge, DiagramOptions, DiagramResult } from "./
 export { DIAGRAM_PROMPT, parseLlmResponse } from "./prompts";
 export type { DiagramSuggestion } from "./prompts";
 
-export { callLlm, getProvider, detectProvider } from "./provider";
-export type { LlmProvider, ProviderName } from "./provider";
+export { callLlm, callLlmMultiTurn, getProvider, detectProvider } from "./provider";
+export type { LlmProvider, ProviderName, ChatMessage } from "./provider";
 
-// ─── Imports for CLI ───────────────────────────────────────────────────────
+export { runAgent, parseReActResponse, createDescribeTools, createAutoTools } from "./agent";
+export type { AgentTool, AgentStep, AgentResult } from "./agent";
+
+// ── Imports for CLI ───────────────────────────────────────────────────────
 
 import { generateDiagram } from "./svg";
-import { DIAGRAM_PROMPT, parseLlmResponse } from "./prompts";
-import { callLlm, detectProvider } from "./provider";
+import { detectProvider } from "./provider";
+import { runAgent, createDescribeTools, createAutoTools } from "./agent";
+import type { AgentResult } from "./agent";
 
-const VERSION = "2.1.0";
+const VERSION = "3.0.0";
 
-// ─── Demo Examples ─────────────────────────────────────────────────────────
+// ── Demo Examples ─────────────────────────────────────────────────────────
 
 const DEMO_EXAMPLES = [
   {
@@ -54,23 +59,54 @@ const DEMO_EXAMPLES = [
 
 export { DEMO_EXAMPLES };
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 function getArg(args: string[], flag: string): string | null {
   const idx = args.indexOf(flag);
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
 }
 
+function formatAgentResult(result: AgentResult): string {
+  const lines: string[] = [];
+
+  if (result.steps.length > 0) {
+    lines.push(`\n  Agent Trace (${result.totalSteps} steps):`);
+    lines.push(`  ${"=".repeat(50)}`);
+    for (let i = 0; i < result.steps.length; i++) {
+      const step = result.steps[i];
+      lines.push(`  Step ${i + 1}: [${step.action}]`);
+      lines.push(`    Thought: ${step.thought}`);
+      const preview = step.observation.length > 300
+        ? step.observation.slice(0, 300) + "..."
+        : step.observation;
+      lines.push(`    Result: ${preview}`);
+      lines.push("");
+    }
+  }
+
+  lines.push(`  Final Answer:`);
+  lines.push(`  ${"=".repeat(50)}`);
+  lines.push(result.finalAnswer);
+  lines.push(`\n  ---`);
+  lines.push(`  Agent: ${result.totalSteps} steps | Provider: ${result.provider}`);
+
+  return lines.join("\n");
+}
+
 function printHelp(): void {
   console.log(`paper-diagram-gen v${VERSION}
 
-Generate academic paper diagrams from text -- manually or with AI.
+Generate academic paper diagrams -- manually or with a deep agent.
+
+ReAct agent: analyze paper -> identify sections -> suggest diagrams ->
+generate SVGs -> validate -> refine. Inspired by LangChain ReAct,
+Anthropic agents, Manus AI.
 
 Usage:
-  paper-diagram-gen generate "<description>" [options]   Generate SVG from arrow notation
-  paper-diagram-gen describe <file>                      Suggest diagrams for a paper (requires API key)
-  paper-diagram-gen auto <file> [--output-dir <dir>]     Generate SVGs from paper text (requires API key)
-  paper-diagram-gen demo                                 Generate 3 example SVGs (no API key needed)
+  paper-diagram-gen generate "<description>" [options]   Generate SVG from arrow notation (no API key)
+  paper-diagram-gen describe <file>                      Agent analyzes paper & suggests diagrams
+  paper-diagram-gen auto <file> [--output-dir <dir>]     Agent generates complete diagram set
+  paper-diagram-gen demo                                 Generate 3 example SVGs (no API key)
   paper-diagram-gen --help                               Show this help
 
 Options:
@@ -79,20 +115,20 @@ Options:
   --output-dir <dir>    Output directory (for auto command, default: ./diagrams)
   --help                Show this help
 
+BYOK (set one for describe/auto):
+  GEMINI_API_KEY        Gemini 2.0 Flash (free tier)
+  OPENAI_API_KEY        GPT-4o
+  ANTHROPIC_API_KEY     Claude Sonnet 4.5
+
 Examples:
   paper-diagram-gen generate "Input -> Process -> Output" --type pipeline
-  paper-diagram-gen generate "Encoder[CNN,RNN] -> Latent -> Decoder" --type architecture --output arch.svg
+  paper-diagram-gen generate "Encoder[CNN,RNN] -> Latent -> Decoder" --type architecture
   paper-diagram-gen describe paper.txt
   paper-diagram-gen auto paper.md --output-dir ./diagrams
-  paper-diagram-gen demo
-
-Environment (BYOK — set one for describe/auto):
-  GEMINI_API_KEY        Google Gemini (tried first)
-  OPENAI_API_KEY        OpenAI GPT-4o-mini (tried second)
-  ANTHROPIC_API_KEY     Anthropic Claude Haiku (tried third)`);
+  paper-diagram-gen demo`);
 }
 
-// ─── Command: generate ─────────────────────────────────────────────────────
+// ── Command: generate (deterministic, no API key) ─────────────────────────
 
 function cmdGenerate(description: string, args: string[]): void {
   const type = (getArg(args, "--type") || "pipeline") as "pipeline" | "architecture" | "flowchart";
@@ -110,7 +146,7 @@ function cmdGenerate(description: string, args: string[]): void {
   }
 }
 
-// ─── Command: describe ─────────────────────────────────────────────────────
+// ── Command: describe (deep agent) ────────────────────────────────────────
 
 async function cmdDescribe(args: string[]): Promise<void> {
   const filePath = args[1];
@@ -123,8 +159,7 @@ async function cmdDescribe(args: string[]): Promise<void> {
   if (!providerName) {
     console.error(
       "No LLM provider configured.\n" +
-        "Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY\n\n" +
-        "Example: GEMINI_API_KEY=... paper-diagram-gen describe paper.txt"
+        "Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY"
     );
     process.exit(1);
   }
@@ -135,24 +170,17 @@ async function cmdDescribe(args: string[]): Promise<void> {
   }
 
   const paperText = fs.readFileSync(filePath, "utf-8");
-  console.log(`Reading ${filePath}... (using ${providerName})`);
+  console.log(`Analyzing ${filePath} with deep agent (${providerName})...\n`);
 
-  const raw = await callLlm(DIAGRAM_PROMPT, `Paper text:\n\n${paperText}`);
-  const suggestions = parseLlmResponse(raw);
+  const result = await runAgent({
+    goal: `Analyze this academic paper and suggest diagrams. Identify the main sections, determine which need visual diagrams, suggest diagram types and arrow notations for each.\n\nPaper:\n${paperText.slice(0, 12000)}`,
+    tools: createDescribeTools(),
+  });
 
-  console.log(`\nSuggested diagrams (${suggestions.length}):\n`);
-  for (let i = 0; i < suggestions.length; i++) {
-    const s = suggestions[i];
-    console.log(`  ${i + 1}. [${s.type}] ${s.purpose}`);
-    console.log(`     ${s.description}`);
-    console.log("");
-  }
-
-  console.log("To generate SVGs automatically, run:");
-  console.log(`  paper-diagram-gen auto ${filePath} --output-dir ./diagrams`);
+  console.log(formatAgentResult(result));
 }
 
-// ─── Command: auto ─────────────────────────────────────────────────────────
+// ── Command: auto (deep agent + SVG generation) ──────────────────────────
 
 async function cmdAuto(args: string[]): Promise<void> {
   const filePath = args[1];
@@ -179,42 +207,24 @@ async function cmdAuto(args: string[]): Promise<void> {
 
   const paperText = fs.readFileSync(filePath, "utf-8");
 
-  console.log(`Reading ${filePath}... (using ${providerName})`);
+  console.log(`Running deep agent on ${filePath} (${providerName})...`);
   console.log(`Output directory: ${outputDir}/\n`);
 
-  // Step 1: LLM describe
-  const raw = await callLlm(DIAGRAM_PROMPT, `Paper text:\n\n${paperText}`);
-  const suggestions = parseLlmResponse(raw);
+  const result = await runAgent({
+    goal: `Analyze this paper and create a complete set of diagrams. First identify sections, then plan a diagram set with priorities, then generate SVGs for each, and validate them.\n\nPaper:\n${paperText.slice(0, 12000)}`,
+    tools: createAutoTools(),
+    maxSteps: 12,
+  });
 
-  // Step 2: Generate SVGs
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  console.log(`Generated ${suggestions.length} diagrams:\n`);
-
-  for (let i = 0; i < suggestions.length; i++) {
-    const s = suggestions[i];
-    const result = generateDiagram(s.description, { type: s.type });
-
-    const slug = s.purpose
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 40);
-    const filename = `${String(i + 1).padStart(2, "0")}-${s.type}-${slug}.svg`;
-    const filepath = path.join(outputDir, filename);
-
-    fs.writeFileSync(filepath, result.svg);
-
-    console.log(`  ${filename}`);
-    console.log(`    Type: ${s.type} | Nodes: ${result.nodes.length} | Edges: ${result.edges.length}`);
-    console.log(`    ${s.purpose}`);
-    console.log("");
-  }
+  console.log(formatAgentResult(result));
+  console.log(`\nDiagrams output directory: ${outputDir}/`);
 }
 
-// ─── Command: demo ─────────────────────────────────────────────────────────
+// ── Command: demo (deterministic, no API key) ─────────────────────────────
 
 function cmdDemo(): void {
   const outputDir = "./demo-diagrams";
@@ -233,13 +243,15 @@ function cmdDemo(): void {
     fs.writeFileSync(filepath, result.svg);
 
     console.log(`  ${filename}`);
-    console.log(`    ${example.name} (${example.type}) -- ${result.nodes.length} nodes, ${result.edges.length} edges`);
+    console.log(
+      `    ${example.name} (${example.type}) -- ${result.nodes.length} nodes, ${result.edges.length} edges`
+    );
   }
 
   console.log(`\nDone! Open the SVG files in any browser to view.`);
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -274,7 +286,6 @@ async function main(): Promise<void> {
       cmdDemo();
       break;
     default:
-      // Backward compat: treat first arg as description for direct SVG generation
       if (command.startsWith("--")) {
         console.error(`Unknown option: ${command}. Use --help for usage.`);
         process.exit(1);

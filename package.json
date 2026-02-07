@@ -1,6 +1,6 @@
 {
   "name": "paper-diagram-gen",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "Generate academic paper diagrams from text or let AI describe them for you. BYOK with Gemini, OpenAI, or Anthropic.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
