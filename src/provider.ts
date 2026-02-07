@@ -20,7 +20,7 @@ export interface LlmProvider {
 // --- Gemini (Google) ---
 
 async function callGemini(apiKey: string, systemPrompt: string, userText: string): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -41,7 +41,7 @@ async function callGemini(apiKey: string, systemPrompt: string, userText: string
 }
 
 async function callGeminiMultiTurn(apiKey: string, systemPrompt: string, messages: ChatMessage[]): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
 
   const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
   contents.push({ role: "user", parts: [{ text: systemPrompt }] });
@@ -79,7 +79,7 @@ async function callOpenAI(apiKey: string, systemPrompt: string, userText: string
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o",
+      model: "gpt-5",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userText },
@@ -116,7 +116,7 @@ async function callOpenAIMultiTurn(apiKey: string, systemPrompt: string, message
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o",
+      model: "gpt-5",
       messages: apiMessages,
       max_tokens: 2048,
     }),

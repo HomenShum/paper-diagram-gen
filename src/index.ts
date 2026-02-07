@@ -116,8 +116,8 @@ Options:
   --help                Show this help
 
 BYOK (set one for describe/auto):
-  GEMINI_API_KEY        Gemini 2.0 Flash (free tier)
-  OPENAI_API_KEY        GPT-4o
+  GEMINI_API_KEY        Gemini 3 Flash
+  OPENAI_API_KEY        GPT-5
   ANTHROPIC_API_KEY     Claude Sonnet 4.5
 
 Examples:

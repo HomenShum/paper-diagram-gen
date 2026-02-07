@@ -23,9 +23,9 @@ Set one environment variable. Providers are tried in this order:
 
 | Priority | Env Var | Provider | Model |
 |----------|---------|----------|-------|
-| 1st | `GEMINI_API_KEY` | Google Gemini | gemini-2.0-flash |
-| 2nd | `OPENAI_API_KEY` | OpenAI | gpt-4o-mini |
-| 3rd | `ANTHROPIC_API_KEY` | Anthropic | claude-haiku-4-5 |
+| 1st | `GEMINI_API_KEY` | Google Gemini | gemini-3-flash-preview |
+| 2nd | `OPENAI_API_KEY` | OpenAI | gpt-5 |
+| 3rd | `ANTHROPIC_API_KEY` | Anthropic | claude-sonnet-4-5 |
 
 ```bash
 # Pick one:
