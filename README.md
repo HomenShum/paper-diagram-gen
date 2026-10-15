@@ -183,3 +183,11 @@ MIT
 ---
 
 Inspired by diagram generation techniques from [awesome-ai-research-writing](https://github.com/HomenShum/awesome-ai-research-writing).
+
+## Automated verification
+
+For a developer opening a pull request, the [Offline verify workflow](.github/workflows/verify.yml) is configured to run four jobs: Ubuntu 24.04 and Windows 2025, each with Node 22 and Node 24. Pushes to `master` use the same checks.
+
+Each job runs `npm ci`, `npm test` (including the build and 32 offline tests), `node dist/index.js --help`, and `npm audit --audit-level=low`. Repository secrets and real provider keys are not required; package installation and audit use the npm registry. The CLI tests supply their own synthetic provider transport with networking blocked.
+
+Use the actual GitHub run results to assess the tested commit and matrix. A green result covers those checks; review generated diagrams separately for content accuracy. See the [CI history](CHANGELOG/ci/verify.md) for the workflow contract and limits.

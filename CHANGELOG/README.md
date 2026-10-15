@@ -7,3 +7,4 @@ Append a dated entry to the history for each surface changed. Keep the reason, o
 - [Tests](tests/index.md)
 - [Development tooling](build/tooling.md)
 - [README](docs/readme.md)
+- [CI verification](ci/verify.md)
