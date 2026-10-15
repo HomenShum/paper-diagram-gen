@@ -10,6 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 // ── Re-exports (programmatic API) ─────────────────────────────────────────
 
@@ -210,18 +211,37 @@ async function cmdAuto(args: string[]): Promise<void> {
   console.log(`Running deep agent on ${filePath} (${providerName})...`);
   console.log(`Output directory: ${outputDir}/\n`);
 
+  const runId = randomUUID();
+  const savedPaths: string[] = [];
+  let writeFailure: Error | undefined;
+  const writeSvg = (svg: string): string => {
+    if (writeFailure) throw writeFailure;
+    const filename = `diagram-${runId}-${String(savedPaths.length + 1).padStart(2, "0")}.svg`;
+    const filepath = path.join(outputDir, filename);
+    try {
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(filepath, svg, { flag: "wx" });
+    } catch (error) {
+      writeFailure = error instanceof Error ? error : new Error(String(error));
+      throw writeFailure;
+    }
+    savedPaths.push(filepath);
+    return filepath;
+  };
+
   const result = await runAgent({
     goal: `Analyze this paper and create a complete set of diagrams. First identify sections, then plan a diagram set with priorities, then generate SVGs for each, and validate them.\n\nPaper:\n${paperText.slice(0, 12000)}`,
-    tools: createAutoTools(),
+    tools: createAutoTools(writeSvg),
     maxSteps: 12,
   });
 
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  if (writeFailure) throw writeFailure;
+  if (savedPaths.length === 0) {
+    throw new Error("No SVG files were saved in this run.");
   }
 
   console.log(formatAgentResult(result));
-  console.log(`\nDiagrams output directory: ${outputDir}/`);
+  console.log(`\nSaved ${savedPaths.length} SVG file(s):\n${savedPaths.join("\n")}`);
 }
 
 // ── Command: demo (deterministic, no API key) ─────────────────────────────

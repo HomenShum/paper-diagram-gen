@@ -76,11 +76,17 @@ Suggested diagrams (3):
 
 ### auto
 
-Chains `describe` and `generate` -- reads a paper, gets LLM suggestions, and generates all SVGs:
+Runs the agent on a paper and saves each SVG produced by its `generate_svg` tool:
 
 ```bash
 paper-diagram-gen auto paper.md --output-dir ./diagrams
 ```
+
+Each run uses filenames such as `diagram-<run UUID>-01.svg` and prints the actual saved paths. Repeated and concurrent runs can share the directory without replacing earlier files. Filenames are generated locally; the model does not choose them.
+
+The command exits nonzero if no SVG was saved during this run or any file write failed, even if the model later claims completion. Existing files do not count as results from the current run. A failed run preserves any earlier SVGs it already saved; inspect the error before using partial output.
+
+A saved file confirms artifact creation. Review its content for accuracy and paper coverage.
 
 ### demo
 
@@ -156,11 +162,19 @@ npm install -g paper-diagram-gen
 npx paper-diagram-gen demo
 ```
 
-## Tests
+## Local development and tests
+
+From a clone of this repository:
 
 ```bash
+npm ci
 npm test
+node dist/index.js demo
 ```
+
+`npm test` builds the TypeScript source, then runs the existing Node test suite and CLI scenarios. The CLI scenarios use synthetic papers and scripted provider responses with networking blocked; they need no API key and make no real provider calls. They check saved SVG labels, repeated and concurrent runs, stale files, and a native write failure after a partial result.
+
+See the [per-surface change histories](CHANGELOG/README.md) for the handoff record and known limits.
 
 ## License
 
