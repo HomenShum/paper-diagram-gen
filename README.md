@@ -76,11 +76,17 @@ Suggested diagrams (3):
 
 ### auto
 
-Chains `describe` and `generate` -- reads a paper, gets LLM suggestions, and generates all SVGs:
+Runs the agent on a paper and saves each SVG produced by its `generate_svg` tool:
 
 ```bash
 paper-diagram-gen auto paper.md --output-dir ./diagrams
 ```
+
+Each run uses filenames such as `diagram-<run UUID>-01.svg` and prints the actual saved paths. Repeated and concurrent runs can share the directory without replacing earlier files. Filenames are generated locally; the model does not choose them.
+
+The command exits nonzero if no SVG was saved during this run or any file write failed, even if the model later claims completion. Existing files do not count as results from the current run. A failed run preserves any earlier SVGs it already saved; inspect the error before using partial output.
+
+A saved file confirms artifact creation. Review its content for accuracy and paper coverage.
 
 ### demo
 
@@ -156,11 +162,19 @@ npm install -g paper-diagram-gen
 npx paper-diagram-gen demo
 ```
 
-## Tests
+## Local development and tests
+
+From a clone of this repository:
 
 ```bash
+npm ci
 npm test
+node dist/index.js demo
 ```
+
+`npm test` builds the TypeScript source, then runs the existing Node test suite and CLI scenarios. The CLI scenarios use synthetic papers and scripted provider responses with networking blocked; they need no API key and make no real provider calls. They check saved SVG labels, repeated and concurrent runs, stale files, and a native write failure after a partial result.
+
+See the [per-surface change histories](CHANGELOG/README.md) for the handoff record and known limits.
 
 ## License
 
@@ -169,3 +183,11 @@ MIT
 ---
 
 Inspired by diagram generation techniques from [awesome-ai-research-writing](https://github.com/HomenShum/awesome-ai-research-writing).
+
+## Automated verification
+
+For a developer opening a pull request, the [Offline verify workflow](.github/workflows/verify.yml) is configured to run four jobs: Ubuntu 24.04 and Windows 2025, each with Node 22 and Node 24. Pushes to `master` use the same checks.
+
+Each job runs `npm ci`, `npm test` (including the build and 32 offline tests), `node dist/index.js --help`, and `npm audit --audit-level=low`. Repository secrets and real provider keys are not required; package installation and audit use the npm registry. The CLI tests supply their own synthetic provider transport with networking blocked.
+
+Use the actual GitHub run results to assess the tested commit and matrix. A green result covers those checks; review generated diagrams separately for content accuracy. See the [CI history](CHANGELOG/ci/verify.md) for the workflow contract and limits.

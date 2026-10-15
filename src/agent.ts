@@ -169,8 +169,8 @@ export async function runAgent(options: {
 
 // ─── Tool Factories ──────────────────────────────────────────────────────────
 
-/** Tools for the `describe` command — analyze paper and suggest diagrams. */
-export function createDescribeTools(): AgentTool[] {
+/** Shared tools; only auto may provide a writer for generated SVGs. */
+function createTools(writeSvg?: (svg: string) => string): AgentTool[] {
   return [
     {
       name: "identify_sections",
@@ -198,13 +198,17 @@ export function createDescribeTools(): AgentTool[] {
       name: "generate_svg",
       description: 'Generate SVG from arrow notation. Input: JSON {"description": "A -> B -> C", "type": "pipeline"}.',
       execute: async (input) => {
+        let description: string;
+        let result: ReturnType<typeof generateDiagram>;
         try {
           const parsed = JSON.parse(input);
-          const result = generateDiagram(parsed.description, { type: parsed.type || "pipeline" });
-          return `SVG generated: ${result.nodes.length} nodes, ${result.edges.length} edges. Description: ${parsed.description}`;
+          description = parsed.description;
+          result = generateDiagram(description, { type: parsed.type || "pipeline" });
         } catch (e: any) {
           return `Error: ${e.message}. Input must be JSON: {"description": "A -> B", "type": "pipeline"}`;
         }
+        const summary = `SVG generated: ${result.nodes.length} nodes, ${result.edges.length} edges. Description: ${description}`;
+        return writeSvg ? `${summary} Saved to ${writeSvg(result.svg)}` : summary;
       },
     },
     {
@@ -232,10 +236,15 @@ export function createDescribeTools(): AgentTool[] {
   ];
 }
 
-/** Tools for the `auto` command — full pipeline from paper to SVGs. */
-export function createAutoTools(): AgentTool[] {
+/** Tools for the `describe` command — analyze paper and suggest diagrams. */
+export function createDescribeTools(): AgentTool[] {
+  return createTools();
+}
+
+/** Tools for the `auto` command; the caller owns optional SVG persistence. */
+export function createAutoTools(writeSvg?: (svg: string) => string): AgentTool[] {
   return [
-    ...createDescribeTools(),
+    ...createTools(writeSvg),
     {
       name: "plan_diagram_set",
       description: "Plan a complete set of diagrams for a paper. Returns prioritized list.",
